@@ -32,15 +32,17 @@ def preprocess_data(dataset_path, train_path, test_path, n, ratio, size):
 
     y_train_encoded, y_test_encoded, le = label_data(y_train, y_test)  # Convert the labels to numbers for the model to be able to process them
 
-    x_train, x_test = minmax_normalize(x_train, x_test)  # Normalize the data to be between 0 and 1 using the min-max normalization
 
-    x_train_features = feature_extraction(x_train)            # Extract features from the images and align them in a dataframe
-    x_train_features = np.expand_dims(x_train_features, axis=0)        # Expand the dimensions of the training dataset to be used in the model
+
+    x_train, x_test = minmax_normalize(x_train, x_test)   # Normalize the data to be between 0 and 1 using the min-max normalization
+
+    x_train_features = feature_extraction(x_train)                                    # Extract features from the images and align them in a dataframe
+    x_train_features = np.expand_dims(x_train_features, axis=0)                       # Expand the dimensions of the training dataset to be used in the model
     x_train_features = np.reshape(x_train_features, (x_train.shape[0], -1))  # Reshape the training dataset to be used to train model
 
-    x_test_features = feature_extraction(x_test)              # Extract features from the images and align them in a dataframe
-    x_test_features = np.expand_dims(x_test_features, axis=0)          # Expand the dimensions of the testing dataset
-    x_test_features = np.reshape(x_test_features, (x_test.shape[0], -1))     # Reshape the testing dataset to be used in the trained model
+    x_test_features = feature_extraction(x_test)                                    # Extract features from the images and align them in a dataframe
+    x_test_features = np.expand_dims(x_test_features, axis=0)                       # Expand the dimensions of the testing dataset
+    x_test_features = np.reshape(x_test_features, (x_test.shape[0], -1))   # Reshape the testing dataset to be used in the trained model
 
     return x_train_features, y_train_encoded, x_test_features, y_test_encoded, le
 
@@ -274,7 +276,8 @@ def gabor_images(filter_list, dataset):
             img = input_image                      # Copy the image to a new variable
 
             gabor_image = cv2.filter2D(img, -1, filt)
-            filtered_image = gabor_image.reshape(-1)
+            clipped_image = np.clip(gabor_image, 0, 1)  # Clip the image to be between 0 and 255
+            filtered_image = clipped_image.reshape(-1)
             curr_gabor_images.append(filtered_image)
 
         gabor_images_dict[gabor_label] = curr_gabor_images
@@ -295,23 +298,36 @@ def sobel_images(kernel_sizes, dataset):
 
     for kernel_size in kernel_sizes:
 
-        curr_sobel_images = []              # A list to store the filtered images for the current kernel size
-        sobel_label = 'Sobel' + str(count)  # A label for the Sobel images for the current kernel size
+        curr_sobel_color = []              # A list to store the filtered images for the current kernel size
+        curr_sobel_gray = []
+        sobel_label_color = 'Sobel_Color_' + str(count)  # A label for the Sobel images for the current kernel size
+        sobel_label_gray = 'Sobel_Gray_' + str(count)    # A label for the Sobel images for the current kernel size
 
         for img in dataset:
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)                       # Convert the image to grayscale
-            blur_gray = cv2.GaussianBlur(gray, (kernel_size, kernel_size), 0)  # Apply Gaussian smoothing to the grayscale image
 
-            edge_sobel_x = cv2.Sobel(blur_gray, cv2.CV_32F, 1, 0, kernel_size)  # Apply the x-axis Sobel filter to the smoothed grayscale image
-            edge_sobel_y = cv2.Sobel(blur_gray, cv2.CV_32F, 0, 1, kernel_size)  # Apply the y-axis Sobel filter to the smoothed grayscale image
+            channels = []  # A list to store the filtered images for each channel (BGR)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)       # Convert the image to grayscale
+            blue, green, red = cv2.split(img)                  # Split the image into its BGR channels
 
-            edge_sobel = cv2.magnitude(edge_sobel_x, edge_sobel_y)             # Calculate the magnitude of the Sobel filter in both axes
-            edge_sobel = cv2.merge([edge_sobel, edge_sobel, edge_sobel])       # Merge the magnitude with itself to create a 3-channel image (BGR format)
-            edge_sobel = edge_sobel.reshape(-1)                                # Reshape the filtered image to a 1D array
+            for channel in [blue, green, red, gray]:
 
-            curr_sobel_images.append(edge_sobel)  # Add the filtered image to the list of filtered images
+                blur = cv2.GaussianBlur(channel, (kernel_size, kernel_size), 0)  # Apply Gaussian smoothing to the image
+                edge_sobel_x = cv2.Sobel(blur, cv2.CV_32F, 1, 0, kernel_size)         # Apply the x-axis Sobel filter to the smoothed grayscale image
+                edge_sobel_y = cv2.Sobel(blur, cv2.CV_32F, 0, 1, kernel_size)         # Apply the y-axis Sobel filter to the smoothed grayscale image
+                edge_sobel = cv2.magnitude(edge_sobel_x, edge_sobel_y)                        # Calculate the magnitude of the Sobel filter in both axes
+                channels.append(edge_sobel)                                                   # Add the filtered image to the list of filtered images
 
-        sobel_images_dict[sobel_label] = curr_sobel_images  # Add the list of filtered images to the dictionary of filtered images
+            edge_sobel_color = cv2.merge([channels[0], channels[1], channels[2]])      # Merge each color's magnitude with itself to create a 3-channel image (BGR format)
+            edge_sobel_gray = cv2.merge([channels[3], channels[3], channels[3]])       # Merge the gray magnitude with itself to create a 3-channel image (BGR format)
+
+            edge_sobel_color = edge_sobel_color.reshape(-1)  # Reshape the 3-channel image to be a 1D array
+            edge_sobel_gray = edge_sobel_gray.reshape(-1)    # Reshape the 3-channel image to be a 1D array
+
+            curr_sobel_color.append(edge_sobel_color)  # Add the color filtered image to the list of filtered images
+            curr_sobel_gray.append(edge_sobel_gray)    # Add the gray filtered image to the list of filtered images
+
+        sobel_images_dict[sobel_label_color] = curr_sobel_color  # Add the list of color filtered images to the dictionary of filtered images
+        sobel_images_dict[sobel_label_gray] = curr_sobel_gray    # Add the list of gray filtered images to the dictionary of filtered images
         count += 1  # Increment the counter for the next label.
 
     return sobel_images_dict
@@ -321,20 +337,20 @@ def sobel_images(kernel_sizes, dataset):
 # The input must be a 4 dimensional array. In our case, an array of colored images. Won't work with grayscale images.
 def feature_extraction(dataset):
 
-    # The following parameters are used to create the Gabor filters.
-    f  = [0.1, 0.5]  # Represents the frequency of the sine component
-    o  = [0, 90]  # Represents the orientation of the filter
-    sa = [0.5, 1.0]          # Represents the spatial aspect ratio of the filter.
-    sd = [0.5, 1.0]           # Represents the standard deviation of the filter
-    p  = [0, np.pi/4]            # Represents the phase offset of the filter
-    ks = [3, 5]                 # Represents the kernel size of the filter (K x K)
+    # The following parameters are used to create the Gabor and Sobel filters.
+    f  = [0.1, 0.5]             # Represents the frequency of the sine component
+    o  = [0, 90]                # Represents the orientation of the filter
+    sa = [1.0]                  # Represents the spatial aspect ratio of the filter.
+    sd = [0.5, 1.0]             # Represents the standard deviation of the filter
+    p  = [0, np.pi/2, np.pi/4]  # Represents the phase offset of the filter
+    ks = [3, 5, 7]              # Represents the kernel size of the filter (K x K)
 
     filters = create_gabor_filter(f, o, sa, sd, p, ks)  # Create the Gabor filters based on the parameters above
 
     # The original images flattened.
     original_images = vector_images(dataset)  # Vectorize the images in the dataset
     gabor_images_dict = gabor_images(filters, dataset)  # Apply the Gabor filters to the images in the dataset
-    # sobel_images_dict = sobel_images(ks, dataset)  # Apply the Sobel filter to the images in the dataset
+    sobel_images_dict = sobel_images(ks, dataset)  # Apply the Sobel filter to the images in the dataset
 
     combined_df = pd.DataFrame()
     combined_df['Original'] = np.concatenate(original_images)  # Add the original images to the dataframe
@@ -342,7 +358,7 @@ def feature_extraction(dataset):
     for label, images_pixels in gabor_images_dict.items():
         combined_df[label] = np.concatenate(images_pixels)
 
-    # for label, images_pixels in sobel_images_dict.items():
-    #    combined_df[label] = np.concatenate(images_pixels)
+    for label, images_pixels in sobel_images_dict.items():
+        combined_df[label] = np.concatenate(images_pixels)
 
     return combined_df
