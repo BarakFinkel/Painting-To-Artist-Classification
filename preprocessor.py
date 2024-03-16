@@ -1,20 +1,19 @@
 import numpy as np
-import matplotlib.pyplot as plt
 import glob
 import cv2
 import os
-import seaborn as sns
 import pandas as pd
 import shutil
 import random
 import warnings
 from sklearn import preprocessing
+from sklearn.decomposition import PCA
 import itertools
 
 
 # This function is used to receive dataset paths, store wanted images in training and testing paths, and the size of the images to be resized to.
 # The function returns the preprocessed data to be used in an ML model of our choice.
-def preprocess_data(dataset_path, train_path, test_path, n, ratio, size):
+def preprocess_data(dataset_path, train_path, test_path, n, ratio, size, pca_comps):
     """
     Preprocesses the data to be used in the model.
     :param dataset_path: The path to the dataset.
@@ -23,6 +22,7 @@ def preprocess_data(dataset_path, train_path, test_path, n, ratio, size):
     :param n: The number of images to sample from the dataset.
     :param ratio: The ratio of the sampled data to be used for training.
     :param size: The row/column size to which the images will be resized.
+    :param pca_comps: The number of components to reduce the dataset to using PCA.
     :return: The preprocessed data.
     """
 
@@ -32,15 +32,14 @@ def preprocess_data(dataset_path, train_path, test_path, n, ratio, size):
 
     y_train_encoded, y_test_encoded, le = label_data(y_train, y_test)  # Convert the labels to numbers for the model to be able to process them
 
+    x_train = minmax_normalize(x_train)  # Normalize the data to be between 0 and 1 using the min-max normalization
+    x_test  = minmax_normalize(x_test)   # Normalize the data to be between 0 and 1 using the min-max normalization
 
-
-    x_train, x_test = minmax_normalize(x_train, x_test)   # Normalize the data to be between 0 and 1 using the min-max normalization
-
-    x_train_features = feature_extraction(x_train)                                    # Extract features from the images and align them in a dataframe
+    x_train_features = feature_extraction(x_train, pca_comps)                         # Extract features from the images and align them in a dataframe
     x_train_features = np.expand_dims(x_train_features, axis=0)                       # Expand the dimensions of the training dataset to be used in the model
     x_train_features = np.reshape(x_train_features, (x_train.shape[0], -1))  # Reshape the training dataset to be used to train model
 
-    x_test_features = feature_extraction(x_test)                                    # Extract features from the images and align them in a dataframe
+    x_test_features = feature_extraction(x_test, pca_comps)                                    # Extract features from the images and align them in a dataframe
     x_test_features = np.expand_dims(x_test_features, axis=0)                       # Expand the dimensions of the testing dataset
     x_test_features = np.reshape(x_test_features, (x_test.shape[0], -1))   # Reshape the testing dataset to be used in the trained model
 
@@ -174,64 +173,71 @@ def label_data(train_labels, test_labels):
     return train_labels_encoded, test_labels_encoded, le
 
 
-def minmax_normalize(train_images, test_images):
+def standard_normalize(train_images):
+    """
+    Normalizes the data to be between 0 and 1 using the standard normalization.
+    :param train_images: The training dataset.
+    :return: Normalized training and testing datasets.
+    """
+    images_normalized = []
+    for img in train_images:
+        mean = np.mean(img)
+        std_dev = np.std(img)
+        normalized_img = (img.astype(np.float32) - mean) / std_dev
+        images_normalized.append(normalized_img)
+
+    return np.array(images_normalized)
+
+
+def minmax_normalize(images):
     """
     Normalizes the data to be between 0 and 1 using the min-max normalization.
-    :param train_images: The training dataset.
-    :param test_images: The testing dataset.
+    :param images: The training dataset.
     :return: Normalized training and testing datasets.
     """
-    train_images_normalized = []
-    for img in train_images:
+    images_normalized = []
+    for img in images:
         min_val = np.min(img)
         max_val = np.max(img)
-        normalized_img = (img.astype(np.float32) - min_val) / (max_val - min_val)
-        train_images_normalized.append(normalized_img)
+        if max_val == min_val:
+            normalized_img = np.full_like(img, 0.5)
+        else:
+            normalized_img = (img.astype(np.float32) - min_val) / (max_val - min_val)
+        images_normalized.append(normalized_img)
 
-    test_images_normalized = []
-    for img in test_images:
-        min_val = np.min(img)
-        max_val = np.max(img)
-        normalized_img = (img.astype(np.float32) - min_val) / (max_val - min_val)
-        test_images_normalized.append(normalized_img)
-
-    return np.array(train_images_normalized), np.array(test_images_normalized)
+    return np.array(images_normalized)
 
 
-def regular_normalize(train_images, test_images):
+def regular_normalize(images):
     """
     Normalizes the data to be between 0 and 1 using the normal normalization.
-    :param train_images: The training dataset.
-    :param test_images: The testing dataset.
+    :param images: The training dataset.
     :return: Normalized training and testing datasets.
     """
-    train_images_normalized = []
-    for img in train_images:
+    images_normalized = []
+    for img in images:
         normalized_img = img.astype(np.float32) / 255
-        train_images_normalized.append(normalized_img)
+        images_normalized.append(normalized_img)
 
-    test_images_normalized = []
-    for img in test_images:
-        normalized_img = img.astype(np.float32) / 255
-        test_images_normalized.append(normalized_img)
-
-    return np.array(train_images_normalized), np.array(test_images_normalized)
+    return np.array(images_normalized)
 
 
-def vector_images(dataset):
+def vector_images(dataset, pca_comps):
     """
     Vectorizes the images in the dataset into 1D arrays.
     :param dataset: The dataset of images to be vectorized.
+    :param pca_comps: The number of components to reduce an image using PCA.
     :return: The vectorized images.
     """
     vectorized_images = []
     for img in dataset:
-        vectorized_img = img.reshape(-1)
+        reduced_image = pca_reduction(img, pca_comps)
+        vectorized_img = reduced_image.reshape(-1)
         vectorized_images.append(vectorized_img)
     return np.array(vectorized_images)
 
 
-def create_gabor_filter(freq, orient, aspect, std_dev, phase_offset, kernel_size):
+def create_gabor_filters(freq, orient, aspect, std_dev, phase_offset, kernel_size):
     """
     Creates a Gabor filter based on the given parameters.
     :param freq: The frequency of the sine component.
@@ -254,11 +260,12 @@ def create_gabor_filter(freq, orient, aspect, std_dev, phase_offset, kernel_size
 
 # This function takes a dataset of images and a list of Gabor filters, and applies the filters to the images.
 # The result is a list of images filters by each individual filter.
-def gabor_images(filter_list, dataset):
+def gabor_images(filter_list, dataset, pca_comps):
     """
     Applies the Gabor filters to the images in the dataset.
     :param filter_list: The list of Gabor filters to be applied to the images.
     :param dataset: The dataset of images to be filtered.
+    :param pca_comps: The number of components to reduce an image using PCA.
     :return: A list of images filtered by each individual filter.
     """
     gabor_images_dict = {}
@@ -276,9 +283,9 @@ def gabor_images(filter_list, dataset):
             img = input_image                      # Copy the image to a new variable
 
             gabor_image = cv2.filter2D(img, -1, filt)
-            clipped_image = np.clip(gabor_image, 0, 1)  # Clip the image to be between 0 and 255
-            filtered_image = clipped_image.reshape(-1)
-            curr_gabor_images.append(filtered_image)
+            gabor_image = pca_reduction(gabor_image, pca_comps)  # Normalize the filtered image to be between 0 and 1 (min-max normalization)
+            gabor_image = gabor_image.reshape(-1)
+            curr_gabor_images.append(gabor_image)
 
         gabor_images_dict[gabor_label] = curr_gabor_images
         count += 1
@@ -286,11 +293,12 @@ def gabor_images(filter_list, dataset):
     return gabor_images_dict
 
 
-def sobel_images(kernel_sizes, dataset):
+def sobel_images(kernel_sizes, dataset, pca_comps):
     """
     Applies the Sobel filter to the images in the dataset.
     :param kernel_sizes: The kernel size of the Sobel filter.
     :param dataset: The dataset of images to be filtered.
+    :param pca_comps: The number of components to reduce an image using PCA.
     :return: The filtered images.
     """
     sobel_images_dict = {}   # A dictionary to store the filtered images
@@ -315,9 +323,13 @@ def sobel_images(kernel_sizes, dataset):
                 edge_sobel_x = cv2.Sobel(blur, cv2.CV_32F, 1, 0, kernel_size)         # Apply the x-axis Sobel filter to the smoothed grayscale image
                 edge_sobel_y = cv2.Sobel(blur, cv2.CV_32F, 0, 1, kernel_size)         # Apply the y-axis Sobel filter to the smoothed grayscale image
                 edge_sobel = cv2.magnitude(edge_sobel_x, edge_sobel_y)                        # Calculate the magnitude of the Sobel filter in both axes
+                # edge_sobel = minmax_normalize(edge_sobel)  # Normalize the filtered image to be between 0 and 1 (min-max normalization
                 channels.append(edge_sobel)                                                   # Add the filtered image to the list of filtered images
 
             edge_sobel_color = cv2.merge([channels[0], channels[1], channels[2]])      # Merge each color's magnitude with itself to create a 3-channel image (BGR format)
+            edge_sobel_color = pca_reduction(edge_sobel_color, pca_comps)  # Reduce the image to the given number of components using PCA
+
+            channels[3] = pca_reduction(channels[3], pca_comps)  # Reduce the image to the given number of components using PCA
             edge_sobel_gray = cv2.merge([channels[3], channels[3], channels[3]])       # Merge the gray magnitude with itself to create a 3-channel image (BGR format)
 
             edge_sobel_color = edge_sobel_color.reshape(-1)  # Reshape the 3-channel image to be a 1D array
@@ -333,24 +345,102 @@ def sobel_images(kernel_sizes, dataset):
     return sobel_images_dict
 
 
+def pca_reduction(image, pca_components):
+    """
+    Reduces the image to the given number of components using PCA.
+    :param image: The image to be reduced.
+    :param pca_components: The number of components to reduce the image to.
+    :return: The reduced image.
+    """
+    # If the image is colored, enters here
+    if len(image.shape) == 3:
+        b, g, r = cv2.split(image)  # Split the image into its BGR channels
+
+        pca_b = PCA(n_components=pca_components)  # Create a PCA object for the red channel
+        pca_g = PCA(n_components=pca_components)  # Create a PCA object for the green channel
+        pca_r = PCA(n_components=pca_components)  # Create a PCA object for the blue channel
+
+        reduced_b = pca_b.fit_transform(b)  # Fit the PCA object to the red channel and transform it
+        reduced_g = pca_g.fit_transform(g)  # Fit the PCA object to the green channel and transform it
+        reduced_r = pca_r.fit_transform(r)  # Fit the PCA object to the blue channel and transform it
+
+        reduced_image = cv2.merge([reduced_b, reduced_g, reduced_r])  # Merge the reduced channels to form the reduced image
+        reduced_image = reduced_image  # Reshape the reduced image to be a 1D array
+
+        return reduced_image
+
+    # If the image is grayscale, enters here
+    else:
+        pca = PCA(n_components=pca_components)
+        reduced_image = pca.fit_transform(image)
+        return reduced_image
+
+
+# This function receives a flat image dataset, the original dataset of the images, and the number of components to reduce the dataset to.
+# It returns the reduced dataset.
+# This function receives a flat image dataset, the original dataset of the images, and the number of components to reduce the dataset to.
+# It returns the reduced dataset.
+def dataset_pca_reduction(dataset, original_dataset, pca_components):
+    """
+    Reduces the dataset to the given number of components using PCA.
+    :param dataset: The dataset to be reduced.
+    :param original_dataset: The original shape of the images in the dataset.
+    :param pca_components: The number of components to reduce the dataset to.
+    :return: The reduced dataset.
+    """
+    reduced_dataset = []
+    num_images, num_rows, num_cols, num_channels = original_dataset.shape  # Get the number of images, rows, columns, and channels in the dataset
+
+    for image in dataset:
+        image = image.reshape(num_rows, num_cols, num_channels)
+        b, g, r = cv2.split(image)  # Split the image into its BGR channels
+
+        pca_b = PCA(n_components=pca_components)  # Create a PCA object for the red channel
+        pca_g = PCA(n_components=pca_components)  # Create a PCA object for the green channel
+        pca_r = PCA(n_components=pca_components)  # Create a PCA object for the blue channel
+
+        reduced_b = pca_b.fit_transform(b)  # Fit the PCA object to the red channel and transform it
+        reduced_g = pca_g.fit_transform(g)  # Fit the PCA object to the green channel and transform it
+        reduced_r = pca_r.fit_transform(r)  # Fit the PCA object to the blue channel and transform it
+
+        reduced_image = cv2.merge([reduced_b, reduced_g, reduced_r])  # Merge the reduced channels to form the reduced image
+        reduced_image = reduced_image.reshape(-1)  # Reshape the reduced image to be a 1D array
+
+        reduced_dataset.append(reduced_image)  # Add the reduced image to the list of reduced images
+
+    return np.array(reduced_dataset)
+
+
 # The following function is used to vectorize the images by extracting features from them, and aligning them in a dataframe.
 # The input must be a 4 dimensional array. In our case, an array of colored images. Won't work with grayscale images.
-def feature_extraction(dataset):
+def feature_extraction(dataset, pca_components):
 
     # The following parameters are used to create the Gabor and Sobel filters.
     f  = [0.1, 0.5]             # Represents the frequency of the sine component
     o  = [0, 90]                # Represents the orientation of the filter
     sa = [1.0]                  # Represents the spatial aspect ratio of the filter.
     sd = [0.5, 1.0]             # Represents the standard deviation of the filter
-    p  = [0, np.pi/2, np.pi/4]  # Represents the phase offset of the filter
+    p  = [0, np.pi/2]           # Represents the phase offset of the filter
     ks = [3, 5, 7]              # Represents the kernel size of the filter (K x K)
 
-    filters = create_gabor_filter(f, o, sa, sd, p, ks)  # Create the Gabor filters based on the parameters above
+    filters = create_gabor_filters(f, o, sa, sd, p, ks)  # Create the Gabor filters based on the parameters above
 
-    # The original images flattened.
-    original_images = vector_images(dataset)  # Vectorize the images in the dataset
-    gabor_images_dict = gabor_images(filters, dataset)  # Apply the Gabor filters to the images in the dataset
-    sobel_images_dict = sobel_images(ks, dataset)  # Apply the Sobel filter to the images in the dataset
+    original_images = vector_images(dataset, pca_components)               # Reduce the images to the given number of components using PCA
+    gabor_images_dict = gabor_images(filters, dataset, pca_components)     # Apply the Gabor filters to the images in the dataset
+    sobel_images_dict = sobel_images(ks, dataset, pca_components)          # Apply the Sobel filter to the images in the dataset
+
+    '''
+    # Reducing the images' y-axis components using PCA
+    reduced_original_images = dataset_pca_reduction(original_images, dataset, pca_components)
+
+    reduced_gabor_images_dict = {}
+    for label, images_pixels in gabor_images_dict.items():
+        reduced_gabor_images_dict[label] = dataset_pca_reduction(images_pixels, dataset, pca_components)
+
+    reduced_sobel_images_dict = {}
+    for label, images_pixels in sobel_images_dict.items():
+        reduced_sobel_images_dict[label] = dataset_pca_reduction(images_pixels, dataset, pca_components)
+    '''
 
     combined_df = pd.DataFrame()
     combined_df['Original'] = np.concatenate(original_images)  # Add the original images to the dataframe
