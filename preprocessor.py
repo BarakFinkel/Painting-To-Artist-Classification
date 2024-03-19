@@ -1,15 +1,21 @@
-import numpy as np
-import glob
-import cv2
+# File work tools
 import os
-import pandas as pd
-import random
+import glob
+
+# General data work tools
 import warnings
-from sklearn import preprocessing
-from sklearn.decomposition import PCA
-from sklearn.model_selection import train_test_split
-from skimage.feature import hog
+import pandas as pd
+import numpy as np
+import random
 import itertools
+
+# Image preprocessing tools
+import cv2
+from sklearn.model_selection import train_test_split
+from sklearn import preprocessing
+from skimage.feature import hog
+from sklearn.decomposition import PCA
+from skimage.feature import graycomatrix, graycoprops
 
 
 # This function is used to receive dataset paths, store wanted images in training and testing paths, and the size of the images to be resized to.
@@ -45,9 +51,9 @@ def preprocess_data(dataset_path, n, ratio, size, pca_comps_thresh, div_func='mi
 
     images, labels = sample_and_resize(dataset_path, n, size)  # Sample the images from the dataset path to the training path and testing path
 
-    images = mult_div_func(images)  # Normalize the data to be between 0 and 1 using the min-max normalization
-    label, le = label_data(labels)  # Convert the labels to numbers for the model to be able to process them
-    images_features = feature_extraction(images, pca_comps_thresh, uno_div_func)  # Extract features from the images and align them in a dataframe
+    normalized_images = mult_div_func(images)  # Normalize the data to be between 0 and 1 using the min-max normalization
+    label, le = label_data(labels)             # Convert the labels to numbers for the model to be able to process them
+    images_features = feature_extraction(images, normalized_images, pca_comps_thresh, uno_div_func)  # Extract features from the images and align them in a dataframe
 
     x_train, x_test, y_train, y_test = train_test_split(images_features, label, test_size=1-ratio, random_state=42)  # Split the data into training and testing datasets
 
@@ -187,25 +193,116 @@ def vector_images(dataset):
     return np.array(vectorized_images)
 
 
-def create_gabor_filters(freq, orient, aspect, std_dev, phase_offset, kernel_size):
+# The following function is used to vectorize the images by extracting features from them, and aligning them in a dataframe.
+# The input must be a 4 dimensional array. In our case, an array of colored images. Won't work with grayscale images.
+def feature_extraction(dataset, norm_dataset, pca_components_threshold, div_func):
     """
-    Creates a Gabor filter based on the given parameters.
-    :param freq: The frequency of the sine component.
-    :param orient: The orientation of the filter.
-    :param aspect: The spatial aspect ratio of the filter.
-    :param std_dev: The standard deviation of the filter.
-    :param phase_offset: The phase offset of the filter.
-    :param kernel_size: The kernel size of the filter (K x K).
-    :return: A Gabor filters list over all possible combinations of the given parameters.
+    Extracts features from the images and aligns them in a dataframe.
+    :param dataset: the dataset of images to be filtered.
+    :param norm_dataset: the normalized dataset of images to be filtered.
+    :param pca_components_threshold: the threshold for the number of components to reduce the dataset to using PCA.
+    :param div_func: the division function to be used to normalize or standardize the images.
+    :return: the dataframe of the extracted features.
     """
-    combos = list(itertools.product(freq, orient, aspect, std_dev, phase_offset, kernel_size))  # All possible combinations of the filter parameters
-    filters = []
 
-    for freq, orient, aspect, std_dev, phase_offset, kernel_size in combos:
-        gabor_filter = cv2.getGaborKernel((kernel_size, kernel_size), std_dev, orient, freq, aspect, phase_offset, ktype=cv2.CV_32F)
-        filters.append(gabor_filter)
+    # FEATURE 1 - Original Images Pixel Values
+    original_images = vector_images(norm_dataset)  # Reduce the images to the given number of components using PCA
+    reduced_original_images = dataset_pca_reduction(original_images, norm_dataset, pca_components_threshold)  # Reduce the images to the given number of components using PCA
+    arrays_to_combine = [reduced_original_images]  # A list to store the reduced images
 
-    return filters
+    # FEATURE 2 - Hog Features :
+
+    # The following parameters are used to create the HOG filters:
+    hog_hyperparameters = {
+        'orientations': [8, 9, 12],            # Number of orientation bins for the gradient histogram
+        'pixels_per_cell': [(2, 2), (4, 4), (8, 8)],   # Size of a cell
+        'cells_per_block': [(2, 2)],           # Number of cells in each block
+        'block_norm': ['L1']                   # Block normalization method
+    }
+
+    hog_images_dict = hog_images(hog_hyperparameters, norm_dataset, div_func)  # Apply the HOG filter to the images in the dataset
+
+    for label, features in hog_images_dict.items():
+        pca = PCA(n_components=pca_components_threshold)
+        reduced_features = pca.fit_transform(features)
+        arrays_to_combine.append(reduced_features)
+
+    # FEATURE 3 - Haralick Features :
+
+    hl_images = haralick_images(dataset, div_func)  # Apply the Haralick filter to the images in the dataset
+    arrays_to_combine.append(hl_images)       # Add the reduced Haralick images to the list of reduced images
+
+    '''
+    # FEATURE 4 - Sobel Features
+
+    ks = [3, 5]   # Represents the kernel size of the filter (K x K)
+
+    sobel_images_dict = sobel_images(ks, norm_dataset, div_func)          # Apply the Sobel filter to the images in the dataset
+
+    reduced_sobel_images_dict = {}
+    for label, images_pixels in sobel_images_dict.items():
+        reduced_sobel_images_dict[label] = dataset_pca_reduction(images_pixels, norm_dataset, pca_components_threshold)
+
+    for label, images_pixels in reduced_sobel_images_dict.items():
+        arrays_to_combine.append(images_pixels)
+
+    # Feature 5 - Gabor Features
+    
+    # The following parameters are used to create the Gabor and Sobel filters.
+    f  = [0.1, 0.5]    # Represents the frequency of the sine component
+    o  = [0, 45, 90, 135]    # Represents the orientation of the filter
+    sa = [1.0]               # Represents the spatial aspect ratio of the filter.
+    sd = [0.5, 1.0]          # Represents the standard deviation of the filter
+    p  = [0]        # Represents the phase offset of the filter
+    ks = [3, 5]              # Represents the kernel size of the filter (K x K)
+    
+    filters = create_gabor_filters(f, o, sa, sd, p, ks)  # Create the Gabor filters based on the parameters above
+    
+    gabor_images_dict = gabor_images(filters, norm_dataset, div_func)     # Apply the Gabor filters to the images in the dataset
+
+    reduced_gabor_images_dict = {}
+    for label, images_pixels in gabor_images_dict.items():
+        reduced_gabor_images_dict[label] = dataset_pca_reduction(images_pixels, norm_dataset, pca_components_threshold)
+
+    for label, features in reduced_gabor_images_dict.items():
+        arrays_to_combine.append(features)
+    '''
+
+    combined_array = np.hstack(arrays_to_combine)
+    combined_df = pd.DataFrame(combined_array)
+
+    return combined_df
+
+
+def haralick_images(dataset, div_func):
+    """
+    Applies the Haralick filter to the images in the dataset.
+    :param dataset: The dataset of images to be filtered.
+    :param div_func: The division function to be used to normalize or standardize the images.
+    :return: The filtered images.
+    """
+
+    distances = [1, 3, 5, 7]
+    angles = [0, np.pi/4, np.pi/2, 3*np.pi/4]
+
+    haralick_imgs = []
+
+    for img in dataset:
+        gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        glcms = graycomatrix(gray_img, distances, angles, 256, symmetric=True, normed=True)
+
+        contrast      = graycoprops(glcms, prop='contrast')       # Contrast
+        dissimilarity = graycoprops(glcms, prop='dissimilarity')  # Dissimilarity
+        homogeneity   = graycoprops(glcms, prop='homogeneity')    # Homogeneity
+        energy        = graycoprops(glcms, prop='energy')         # Energy
+        correlation   = graycoprops(glcms, prop='correlation')    # Correlation
+
+        # Normalize each feature
+        features = [div_func(features) for features in [contrast, dissimilarity, homogeneity, energy, correlation]]
+        haralick_image = np.array(features).flatten()
+        haralick_imgs.append(haralick_image)
+
+    return np.array(haralick_imgs)
 
 
 def hog_images(hyperparameters, dataset, div_func):
@@ -227,7 +324,6 @@ def hog_images(hyperparameters, dataset, div_func):
         for img in dataset:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             hog_image = hog(gray, orientations=orientation, pixels_per_cell=pixels_per_cell, cells_per_block=cells_per_block, block_norm=block_norm)
-            hog_image = cv2.merge([hog_image, hog_image, hog_image])
             hog_image = div_func(hog_image)
             hog_image = hog_image.reshape(-1)
             hog_curr_images.append(hog_image)
@@ -236,6 +332,27 @@ def hog_images(hyperparameters, dataset, div_func):
         count += 1
 
     return hog_images_dict
+
+
+def create_gabor_filters(freq, orient, aspect, std_dev, phase_offset, kernel_size):
+    """
+    Creates a Gabor filter based on the given parameters.
+    :param freq: The frequency of the sine component.
+    :param orient: The orientation of the filter.
+    :param aspect: The spatial aspect ratio of the filter.
+    :param std_dev: The standard deviation of the filter.
+    :param phase_offset: The phase offset of the filter.
+    :param kernel_size: The kernel size of the filter (K x K).
+    :return: A Gabor filters list over all possible combinations of the given parameters.
+    """
+    combos = list(itertools.product(freq, orient, aspect, std_dev, phase_offset, kernel_size))  # All possible combinations of the filter parameters
+    filters = []
+
+    for freq, orient, aspect, std_dev, phase_offset, kernel_size in combos:
+        gabor_filter = cv2.getGaborKernel((kernel_size, kernel_size), std_dev, orient, freq, aspect, phase_offset, ktype=cv2.CV_32F)
+        filters.append(gabor_filter)
+
+    return filters
 
 
 # This function takes a dataset of images and a list of Gabor filters, and applies the filters to the images.
@@ -311,7 +428,7 @@ def sobel_images(kernel_sizes, dataset, div_func):
 def dataset_pca_reduction(dataset, original_dataset, threshold):
     """
     Reduces the dataset to the given number of components using PCA.
-    :param dataset: The dataset to be reduced.
+    :param dataset: The dataset to be reduced, expected to be a 4D array representing 3D images.
     :param original_dataset: The original shape of the images in the dataset.
     :param threshold: The number of components to reduce the dataset to.
     :return: The reduced dataset.
@@ -341,12 +458,13 @@ def dataset_pca_reduction(dataset, original_dataset, threshold):
 
     reduced_dataset = []
 
+    # Reduce each channel to the given threshold using PCA
     for channel in [dataset_b, dataset_g, dataset_r]:
         pca_channel = PCA(n_components=max_components)
         reduced_channel = pca_channel.fit_transform(channel)
         reduced_dataset.append(reduced_channel)
 
-    reduced_dataset = cv2.merge(reduced_dataset)  # Merge the reduced channels to form the reduced dataset
+    reduced_dataset = cv2.merge(reduced_dataset)               # Merge the reduced channels to form the reduced dataset
     reduced_dataset = reduced_dataset.reshape(num_images, -1)  # Reshape the reduced dataset to be a 1D array
 
     # Finally, reduce the dataset to the given threshold using PCA
@@ -354,70 +472,3 @@ def dataset_pca_reduction(dataset, original_dataset, threshold):
     reduced_dataset = pca.fit_transform(reduced_dataset)
 
     return np.array(reduced_dataset)
-
-
-# The following function is used to vectorize the images by extracting features from them, and aligning them in a dataframe.
-# The input must be a 4 dimensional array. In our case, an array of colored images. Won't work with grayscale images.
-def feature_extraction(dataset, pca_components_threshold, div_func):
-
-    # The following parameters are used to create the Gabor and Sobel filters.
-    f  = [0.1, 0.5]    # Represents the frequency of the sine component
-    o  = [0, 45, 90, 135]    # Represents the orientation of the filter
-    sa = [1.0]               # Represents the spatial aspect ratio of the filter.
-    sd = [0.5, 1.0]          # Represents the standard deviation of the filter
-    p  = [0]        # Represents the phase offset of the filter
-    ks = [3, 5]              # Represents the kernel size of the filter (K x K)
-
-    # The following parameters are used to create the HOG filters:
-    hog_hyperparameters = {
-        'orientations': [8, 9, 12],                       # Number of orientation bins for the gradient histogram
-        'pixels_per_cell': [(8, 8), (16, 16)],            # Size of a cell
-        'cells_per_block': [(1, 1), (2, 2)],              # Number of cells in each block
-        'block_norm': ['L1', 'L1-sqrt', 'L2', 'L2-Hys']   # Block normalization method
-    }
-
-    filters = create_gabor_filters(f, o, sa, sd, p, ks)  # Create the Gabor filters based on the parameters above
-
-    # Original Images
-    original_images = vector_images(dataset)               # Reduce the images to the given number of components using PCA
-    reduced_original_images = dataset_pca_reduction(original_images, dataset, pca_components_threshold)  # Reducing the images' y-axis components using PCA
-    arrays_to_combine = [reduced_original_images]          # A list to store the reduced images
-
-    # HOG Images
-    hog_images_dict = hog_images(hog_hyperparameters, dataset, div_func)  # Apply the HOG filter to the images in the dataset
-
-    reduced_hog_images_dict = {}
-    for label, features in hog_images_dict.items():
-        pca = PCA(n_components=pca_components_threshold)
-        reduced_features = pca.fit_transform(features)
-        reduced_hog_images_dict[label] = np.array(reduced_features)
-
-    for label, features in reduced_hog_images_dict.items():
-        arrays_to_combine.append(features)
-
-    # Sobel Images
-    sobel_images_dict = sobel_images(ks, dataset, div_func)          # Apply the Sobel filter to the images in the dataset
-
-    reduced_sobel_images_dict = {}
-    for label, images_pixels in sobel_images_dict.items():
-        reduced_sobel_images_dict[label] = dataset_pca_reduction(images_pixels, dataset, pca_components_threshold)
-
-    for label, images_pixels in reduced_sobel_images_dict.items():
-        arrays_to_combine.append(images_pixels)
-
-    '''
-    # Gabor Images
-    gabor_images_dict = gabor_images(filters, dataset, div_func)     # Apply the Gabor filters to the images in the dataset
-
-    reduced_gabor_images_dict = {}
-    for label, images_pixels in gabor_images_dict.items():
-        reduced_gabor_images_dict[label] = dataset_pca_reduction(images_pixels, dataset, pca_components_threshold)
-
-    for label, features in reduced_gabor_images_dict.items():
-        arrays_to_combine.append(features)
-    '''
-
-    combined_array = np.hstack(arrays_to_combine)
-    combined_df = pd.DataFrame(combined_array)
-
-    return combined_df
