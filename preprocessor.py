@@ -24,7 +24,7 @@ def preprocess_data(dataset_path, n, ratio, size, pca_comps_thresh, div_func='mi
     """
     Preprocesses the data to be used in the model.
     :param dataset_path: The path to the dataset.
-    :param n: The number of images to sample from the dataset.
+    :param n: The number of images to sample from each class in the dataset.
     :param ratio: The ratio of the sampled data to be used for training.
     :param size: The row/column size to which the images will be resized.
     :param pca_comps_thresh: The threshold for the number of components to reduce the dataset to using PCA.
